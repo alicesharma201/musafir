@@ -269,63 +269,8 @@ export function HiddenGems() {
 }
 
 /* ---------------- Live map ---------------- */
-export function LiveMap({ pulseAdj, reports, onOptimize }: { pulseAdj: Record<string, number>; reports: Report[]; onOptimize: (id: string) => void }) {
-  const [hour, setHour] = useState(16);
-  const [sel, setSel] = useState<Place | null>(byId("amber"));
-  const color = (p: Place, s: number) => (p.gem && s < 40 ? "bg-gem" : levelClass[level(s)].split(" ")[0]);
-  return (
-    <div className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
-      <div className="relative aspect-[4/3] overflow-hidden rounded-2xl border-4 border-double border-gold bg-secondary">
-        <div className="jaali absolute inset-0" />
-        <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 h-full w-full">
-          <path d="M30 0 Q40 20 35 35 T45 60 T60 100" className="fill-none stroke-muted-foreground/30" strokeWidth="0.6" strokeDasharray="1.5 1" />
-          <path d="M52 14 L50 34 L48 56 L52 72 L66 84" className="fill-none stroke-primary/50" strokeWidth="0.8" />
-          <path d="M48 56 L80 48" className="fill-none stroke-primary/40" strokeWidth="0.6" />
-          <ellipse cx="50" cy="35" rx="7" ry="3" className="fill-indigo-deep/20" />
-          <rect x="36" y="50" width="24" height="16" rx="1" className="fill-primary/10 stroke-primary/30" strokeWidth="0.3" strokeDasharray="1 0.6" />
-        </svg>
-        <span className="absolute left-[37%] top-[46%] font-display text-xs text-primary/60">Pink City walls</span>
-        {PLACES.map((p) => {
-          const s = crowdScore(p, { day: "Sun", hour, festival: false, weather: "clear" }, pulseAdj[p.id] ?? 0).score;
-          return (
-            <button key={p.id} onClick={() => setSel(p)} style={{ left: `${p.x}%`, top: `${p.y}%` }} className="group absolute -translate-x-1/2 -translate-y-1/2" aria-label={p.name}>
-              <span className={`absolute inset-0 rounded-full ${color(p, s)} opacity-50 ${s >= 60 ? "animate-ping" : ""}`} />
-              <span className={`relative flex h-5 w-5 items-center justify-center rounded-full border-2 border-background text-[9px] text-primary-foreground ${color(p, s)} ${sel?.id === p.id ? "scale-150" : ""} transition`}>{p.gem && s < 40 ? "★" : ""}</span>
-              <span className="pointer-events-none absolute left-1/2 top-6 -translate-x-1/2 whitespace-nowrap rounded bg-card px-1.5 text-[10px] font-semibold opacity-0 shadow group-hover:opacity-100">{p.name}</span>
-            </button>
-          );
-        })}
-        <div className="absolute bottom-3 left-3 right-3 rounded-xl bg-card/90 p-3 text-xs backdrop-blur">
-          <div className="flex flex-wrap gap-3">
-            {[["bg-crowd-low", "Low"], ["bg-crowd-moderate", "Moderate"], ["bg-crowd-high", "High"], ["bg-crowd-critical", "Critical"], ["bg-gem", "Hidden gem"]].map(([c, l]) => <span key={l} className="flex items-center gap-1"><i className={`h-3 w-3 rounded-full ${c}`} />{l}</span>)}
-          </div>
-          <label className="mt-2 flex items-center gap-2">Sunday {hour > 12 ? hour - 12 : hour}{hour < 12 ? "AM" : "PM"}
-            <input type="range" min={7} max={20} value={hour} onChange={(e) => setHour(+e.target.value)} className="flex-1 accent-[var(--primary)]" />
-          </label>
-        </div>
-      </div>
-      {sel && (() => {
-        const s = crowdScore(sel, { day: "Sun", hour, festival: false, weather: "clear" }, pulseAdj[sel.id] ?? 0).score;
-        const last = reports.find((r) => r.place === sel.id);
-        return (
-          <div key={sel.id} className="rounded-2xl border bg-card p-6 shadow animate-in fade-in slide-in-from-right-4">
-            <p className="font-display text-saffron">{sel.hindi}</p>
-            <h3 className="text-3xl">{sel.name}</h3>
-            <div className="mt-2"><Badge score={s} /></div>
-            <p className="mt-4 text-sm">🕘 Best time: <b>{sel.best}</b></p>
-            <p className="text-sm">⚠ Peak: <b>{sel.peak}</b></p>
-            {sel.alternatives && <p className="mt-3 text-sm">Nearby: {sel.alternatives.map((a) => <button key={a} onClick={() => setSel(byId(a))} className="mr-2 underline decoration-saffron">{byId(a).name}</button>)}</p>}
-            <div className="mt-4 rounded-lg bg-secondary p-3 text-sm">
-              <p className="text-xs uppercase text-muted-foreground">Latest community update</p>
-              <p>“{last ? last.tip || last.status : sel.update}”</p>
-            </div>
-            <button onClick={() => onOptimize(sel.id)} className="mt-5 w-full rounded-full bg-primary py-2.5 font-semibold text-primary-foreground hover:bg-saffron">Optimize my visit</button>
-          </div>
-        );
-      })()}
-    </div>
-  );
-}
+export { LiveMap } from "./LiveMap";
+
 
 /* ---------------- Pulse ---------------- */
 export function Pulse({ reports, addReport }: { reports: Report[]; addReport: (r: Omit<Report, "id" | "ago" | "user">) => void }) {
