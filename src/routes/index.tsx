@@ -27,7 +27,7 @@ const SEED: Report[] = [
   { id: 4, place: "albert", user: "Arjun", status: "Quiet", tip: "Egyptian mummy gallery is empty.", ago: "40 min ago" },
 ];
 
-const NAV = [["planner", "Planner"], ["forecast", "Forecast"], ["gems", "Hidden gems"], ["map", "Live map"], ["pulse", "Pulse"], ["rewards", "Rewards"]];
+const NAV: [string, string][] = [["planner", "Planner"], ["forecast", "Forecast"], ["gems", "Hidden gems"], ["map", "Live map"], ["pulse", "Pulse"], ["rewards", "Rewards"]];
 
 function Index() {
   const [plan, setPlan] = useState<Plan>({ day: "Sun", time: "full", budget: 2000, interests: ["heritage", "photography"], type: "friends", crowd: "avoid", must: "amber" });

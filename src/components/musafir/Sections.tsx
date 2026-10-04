@@ -98,7 +98,7 @@ export function buildSmart(plan: Plan): Stop[] {
     { time: "9:00 AM", hour: 9, id: must, note: "Moved to morning, before tour buses" },
     { time: "11:30 AM", hour: 11, id: alts[1] ?? "panna", note: "Hidden gem, 4 km away" },
     { time: "1:00 PM", hour: 13, id: "food", food: true, note: "Local thali — Laxmi Misthan Bhandar style" },
-    { time: "3:00 PM", hour: 15, id: alts[0], note: "Similar vibe, half the crowd" },
+    { time: "3:00 PM", hour: 15, id: alts[0] ?? "jaigarh", note: "Similar vibe, half the crowd" },
     { time: "5:30 PM", hour: 17, id: "jalmahal", note: "Evening viewpoint" },
   ];
   return plan.time === "half" ? s.slice(0, 3) : s;
