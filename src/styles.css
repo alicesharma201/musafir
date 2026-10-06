@@ -1,6 +1,8 @@
 @import "tailwindcss" source(none);
 @source "../src";
 @import "tw-animate-css";
+@import "leaflet/dist/leaflet.css";
+
 
 @custom-variant dark (&:is(.dark *));
 
@@ -97,3 +99,66 @@
   background-image: repeating-linear-gradient(90deg, var(--primary) 0 12px, var(--saffron) 12px 24px, var(--gold) 24px 36px, var(--indigo-deep) 36px 48px);
   height: 6px;
 }
+
+/* Musafir Leaflet Map styling */
+.musafir-map-container .leaflet-tile-pane {
+  filter: saturate(1.05) contrast(1.02);
+}
+
+.musafir-map-container .leaflet-popup-content-wrapper {
+  background: var(--color-card, #fff);
+  color: var(--color-foreground, #222);
+  border-radius: 1rem;
+  border: 1px solid var(--color-border);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  padding: 0;
+  overflow: hidden;
+}
+
+.musafir-map-container .leaflet-popup-content {
+  margin: 0;
+  line-height: inherit;
+}
+
+.musafir-map-container .leaflet-popup-tip {
+  background: var(--color-card, #fff);
+}
+
+.custom-marker-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  border: 2px solid #ffffff;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+  transition: transform 0.2s ease;
+}
+
+.custom-marker-pin:hover {
+  transform: scale(1.2);
+  z-index: 1000 !important;
+}
+
+.user-location-pulse {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  background-color: #2563eb;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.25);
+}
+
+.user-location-pulse::after {
+  content: "";
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(37, 99, 235, 0.4);
+  animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+

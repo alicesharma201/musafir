@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import hero from "@/assets/hero-jaipur.jpg";
 import {
@@ -53,7 +53,17 @@ function Index() {
           <nav className="hidden flex-1 justify-center gap-5 text-sm md:flex">
             {NAV.map(([id, l]) => <button key={id} onClick={() => go(id)} className="hover:text-primary">{l}</button>)}
           </nav>
-          <span className="ml-auto rounded-full bg-gold px-3 py-1 text-sm font-bold text-foreground md:ml-0">🪙 {points}</span>
+          <div className="ml-auto flex items-center gap-3 md:ml-0">
+            <span className="rounded-full bg-gold px-3 py-1 text-sm font-bold text-foreground">🪙 {points}</span>
+            <Link
+              to="/admin"
+              className="inline-flex items-center gap-1 rounded-full bg-neutral-900 px-3 py-1 text-xs font-semibold text-amber-400 border border-amber-500/40 hover:bg-neutral-800 transition shadow-sm"
+              title="Open Jaipur Tourism Command Center"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+              Admin
+            </Link>
+          </div>
         </div>
         <div className="border-bandhani" />
       </header>
