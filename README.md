@@ -1,7 +1,6 @@
 # Jaipur Experience Hub
 
-**Live Demo:** https://musafir-seven-xi.vercel.app  
-**Admin Command Center:** https://musafir-seven-xi.vercel.app/admin
+**Live Demo:** https://musafir-seven-xi.vercel.app
 
 prepare a website for this add all features like particularly we are showing demo for jaipur so make the ui ux interactive according to jaipur themes
 
