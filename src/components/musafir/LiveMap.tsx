@@ -17,9 +17,11 @@ interface LiveMapProps {
   pulseAdj: Record<string, number>;
   reports: Report[];
   onOptimize: (id: string) => void;
+  selectedPlaceId?: string | null;
+  focusKey?: number;
 }
 
-export function LiveMap({ pulseAdj, reports, onOptimize }: LiveMapProps) {
+export function LiveMap({ pulseAdj, reports, onOptimize, selectedPlaceId, focusKey }: LiveMapProps) {
   // Client-side mounted state for SSR safety
   const [mounted, setMounted] = useState(false);
   const [hour, setHour] = useState(16);
@@ -44,6 +46,21 @@ export function LiveMap({ pulseAdj, reports, onOptimize }: LiveMapProps) {
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  useEffect(() => {
+    if (selectedPlaceId) {
+      try {
+        const p = byId(selectedPlaceId);
+        if (p) {
+          setSel(p);
+          setFlyTarget([p.lat, p.lng]);
+          setFlyZoom(15);
+        }
+      } catch {
+        // ignore missing place lookup
+      }
+    }
+  }, [selectedPlaceId, focusKey]);
 
   // Handle "Use my location"
   const handleUseMyLocation = () => {
@@ -163,13 +180,15 @@ export function LiveMap({ pulseAdj, reports, onOptimize }: LiveMapProps) {
             }
           : data[0];
 
-        setSelectedSearchResult(target);
-        const lat = parseFloat(target.lat);
-        const lon = parseFloat(target.lon);
-        setFlyTarget([lat, lon]);
-        setFlyZoom(15);
-        if (localMatch) {
-          setSel(localMatch);
+        if (target) {
+          setSelectedSearchResult(target);
+          const lat = parseFloat(target.lat);
+          const lon = parseFloat(target.lon);
+          setFlyTarget([lat, lon]);
+          setFlyZoom(15);
+          if (localMatch) {
+            setSel(localMatch);
+          }
         }
       } else {
         setSearchResults(data);
@@ -437,9 +456,6 @@ export function LiveMap({ pulseAdj, reports, onOptimize }: LiveMapProps) {
                         💎 Hidden Gem
                       </span>
                     )}
-                    <span className="rounded-full bg-secondary px-3 py-1 text-xs font-semibold text-muted-foreground">
-                      🎟 Entry: {sel.entry === 0 ? "Free" : `₹${sel.entry}`}
-                    </span>
                   </div>
 
                   <div className="mt-5 space-y-2 border-t pt-4 text-sm">

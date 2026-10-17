@@ -3,6 +3,7 @@ import {
   PLACES, byId, crowdScore, level, levelClass, DAYS, INTERESTS,
   type ForecastInput, type Place,
 } from "@/lib/jaipur-data";
+import { rankAlternatives, formatDistance } from "@/lib/recommendation";
 
 export type Report = { id: number; place: string; user: string; status: "Quiet" | "Moderate" | "Busy"; tip: string; ago: string };
 
@@ -22,10 +23,15 @@ export function Badge({ score }: { score: number }) {
   return <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${levelClass[l]}`}>{score}/100 · {l}</span>;
 }
 
-/* ---------------- Planner ---------------- */
 export type Plan = {
-  day: string; time: "half" | "full"; budget: number; interests: string[];
-  type: string; crowd: string; must: string;
+  day: string;
+  time: "half" | "full";
+  budget: number;
+  interests: string[];
+  type: string;
+  crowd: string;
+  must: string;
+  stopReplacements?: Record<string, string> | undefined;
 };
 
 export function Planner({ plan, setPlan, onGenerate }: { plan: Plan; setPlan: (p: Plan) => void; onGenerate: () => void }) {
@@ -78,53 +84,179 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 /* ---------------- Itinerary + Smart Route ---------------- */
-type Stop = { time: string; hour: number; id: string; note?: string; food?: boolean };
+export type Stop = { time: string; hour: number; id: string; note?: string; food?: boolean };
+
+export function resolveStop(stop: Stop, replacements?: Record<string, string>): Stop {
+  if (stop.food || !replacements) return stop;
+  const replacementId = replacements[stop.id];
+  if (replacementId && replacementId !== stop.id) {
+    try {
+      const originalPlace = byId(stop.id);
+      const newPlace = byId(replacementId);
+      return {
+        ...stop,
+        id: replacementId,
+        note: `Replaced crowded ${originalPlace.name} with ${newPlace.name}`,
+      };
+    } catch {
+      return stop;
+    }
+  }
+  return stop;
+}
 
 export function buildOriginal(plan: Plan): Stop[] {
   const must = plan.must || "amber";
-  const base: Stop[] = [
+  const raw: Stop[] = [
     { time: "11:00 AM", hour: 11, id: "hawa" },
     { time: "1:00 PM", hour: 13, id: "jantar" },
     { time: "4:00 PM", hour: 16, id: must },
     { time: "6:30 PM", hour: 18, id: "nahargarh" },
   ];
-  return plan.time === "half" ? base.slice(1, 3) : base;
+  const sliced = plan.time === "half" ? raw.slice(1, 3) : raw;
+  const resolved = sliced.map((s) => resolveStop(s, plan.stopReplacements));
+
+  // If there are replacements for hotspots not present in sliced stops, include them
+  if (plan.stopReplacements) {
+    Object.entries(plan.stopReplacements).forEach(([hotspotId, gemId]) => {
+      if (!sliced.some((s) => s.id === hotspotId)) {
+        if (!resolved.some((s) => s.id === gemId)) {
+          try {
+            const hotspot = byId(hotspotId);
+            resolved.push({
+              time: "5:00 PM",
+              hour: 17,
+              id: gemId,
+              note: `Added as quieter alternative to crowded ${hotspot.name}`,
+            });
+          } catch {
+            // ignore
+          }
+        }
+      }
+    });
+  }
+
+  resolved.sort((a, b) => a.hour - b.hour);
+  return resolved;
 }
+
 export function buildSmart(plan: Plan): Stop[] {
   const must = plan.must || "amber";
   const p = byId(must);
   const alts = p.alternatives ?? ["panna", "jaigarh"];
-  const s: Stop[] = [
+  const raw: Stop[] = [
     { time: "9:00 AM", hour: 9, id: must, note: "Moved to morning, before tour buses" },
-    { time: "11:30 AM", hour: 11, id: alts[1] ?? "panna", note: "Hidden gem, 4 km away" },
+    { time: "11:30 AM", hour: 11, id: alts[1] ?? "panna", note: "Hidden gem, quieter alternative" },
     { time: "1:00 PM", hour: 13, id: "food", food: true, note: "Local thali — Laxmi Misthan Bhandar style" },
-    { time: "3:00 PM", hour: 15, id: alts[0] ?? "jaigarh", note: "Similar vibe, half the crowd" },
+    { time: "3:00 PM", hour: 15, id: alts[0] ?? "jaigarh", note: "Similar vibe, lower crowd" },
     { time: "5:30 PM", hour: 17, id: "jalmahal", note: "Evening viewpoint" },
   ];
-  return plan.time === "half" ? s.slice(0, 3) : s;
+  const sliced = plan.time === "half" ? raw.slice(0, 3) : raw;
+  const resolved = sliced.map((s) => resolveStop(s, plan.stopReplacements));
+
+  // If there are replacements for hotspots not present in sliced stops, include them
+  if (plan.stopReplacements) {
+    Object.entries(plan.stopReplacements).forEach(([hotspotId, gemId]) => {
+      if (!sliced.some((s) => s.id === hotspotId)) {
+        if (!resolved.some((s) => s.id === gemId)) {
+          try {
+            const hotspot = byId(hotspotId);
+            resolved.push({
+              time: "4:30 PM",
+              hour: 16,
+              id: gemId,
+              note: `Added as quieter alternative to crowded ${hotspot.name}`,
+            });
+          } catch {
+            // ignore
+          }
+        }
+      }
+    });
+  }
+
+  // Avoid duplicate stops across the itinerary
+  const used = new Set<string>();
+  for (let i = 0; i < resolved.length; i++) {
+    const s = resolved[i];
+    if (!s || s.food) continue;
+    if (used.has(s.id)) {
+      const unusedAlt =
+        alts.find((a) => !used.has(a)) ??
+        PLACES.find((pl) => pl.gem && !used.has(pl.id))?.id ??
+        "jaigarh";
+      resolved[i] = {
+        time: s.time,
+        hour: s.hour,
+        id: unusedAlt,
+        note: "Hidden gem, quieter alternative",
+      };
+      used.add(unusedAlt);
+    } else {
+      used.add(s.id);
+    }
+  }
+
+  resolved.sort((a, b) => a.hour - b.hour);
+  return resolved;
 }
 
-export function Itinerary({ plan, optimized, setOptimized, onReward }: { plan: Plan; optimized: boolean; setOptimized: (b: boolean) => void; onReward: (n: number) => void }) {
+export function Itinerary({
+  plan,
+  optimized,
+  setOptimized,
+  onReward,
+  onResetReplacements,
+}: {
+  plan: Plan;
+  optimized: boolean;
+  setOptimized: (b: boolean) => void;
+  onReward: (n: number) => void;
+  onResetReplacements?: () => void;
+}) {
   const day = plan.day;
   const stops = optimized ? buildSmart(plan) : buildOriginal(plan);
   const scoreOf = (s: Stop) => (s.food ? 30 : crowdScore(byId(s.id), { day, hour: s.hour, festival: false, weather: "clear" }).score);
   const avg = Math.round(stops.reduce((a, s) => a + scoreOf(s), 0) / stops.length);
-  const origAvg = Math.round(buildOriginal(plan).reduce((a, s) => a + scoreOf(s), 0) / buildOriginal(plan).length);
-  const cost = stops.reduce((a, s) => a + (s.food ? 250 : byId(s.id).entry), 0) + 600;
+  const unreplacedPlan = { ...plan, stopReplacements: undefined };
+  const origAvg = Math.round(buildOriginal(unreplacedPlan).reduce((a, s) => a + scoreOf(s), 0) / buildOriginal(unreplacedPlan).length);
   const must = byId(plan.must || "amber");
   const mustScore = crowdScore(must, { day, hour: 16, festival: false, weather: "clear" }).score;
+  const hasReplacements = Boolean(plan.stopReplacements && Object.keys(plan.stopReplacements).length > 0);
 
   return (
     <div className="grid gap-8 lg:grid-cols-[1.4fr_1fr]">
       <div className="rounded-2xl border bg-card p-6 shadow">
-        {!optimized && (
+        {!optimized && !hasReplacements && (
           <div className="mb-5 rounded-xl border-l-4 border-crowd-critical bg-secondary p-4">
             <p className="font-bold">⚠ {must.name} at 4 PM: {mustScore}/100 crowd pressure — {level(mustScore)}</p>
             <p className="text-sm text-muted-foreground">{day} plus evening tourist rush. Expected wait 40+ minutes.</p>
           </div>
         )}
+        {hasReplacements && (
+          <div className="mb-5 rounded-xl border-l-4 border-emerald-600 bg-secondary p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 animate-in fade-in">
+            <div>
+              <p className="font-bold text-emerald-600">✓ Hidden Gem Replacement Active</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {Object.entries(plan.stopReplacements ?? {})
+                  .map(([h, g]) => `${byId(h).name} replaced with ${byId(g).name}`)
+                  .join(" · ")}
+              </p>
+            </div>
+            {onResetReplacements && (
+              <button
+                type="button"
+                onClick={onResetReplacements}
+                className="rounded-full border border-primary/50 bg-background px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary hover:text-primary-foreground transition shrink-0"
+              >
+                Reset to original stops
+              </button>
+            )}
+          </div>
+        )}
         <div className="flex items-center justify-between">
-          <h3 className="text-2xl">{optimized ? "Musafir Smart Route" : "Your original plan"}</h3>
+          <h3 className="text-2xl">{optimized ? "Musafir Smart Route" : "Your itinerary plan"}</h3>
           <span className="text-sm text-muted-foreground">{day} · {plan.type} · ₹{plan.budget}</span>
         </div>
         <ol className="mt-5 space-y-4 border-l-2 border-dashed border-primary pl-6">
@@ -139,34 +271,33 @@ export function Itinerary({ plan, optimized, setOptimized, onReward }: { plan: P
                   {p?.gem && <span className="rounded-full bg-gem px-2 py-0.5 text-xs text-primary-foreground">★ Hidden gem</span>}
                   <Badge score={scoreOf(s)} />
                 </div>
-                {s.note && optimized && <p className="text-sm text-muted-foreground">{s.note}</p>}
+                {s.note && <p className="text-sm text-muted-foreground mt-0.5">{s.note}</p>}
                 {i < stops.length - 1 && <p className="text-xs text-muted-foreground">↓ ~{15 + i * 5} min by auto-rickshaw</p>}
               </li>
             );
           })}
         </ol>
-        <div className="mt-6 flex flex-wrap items-center gap-3">
-          <span className="text-sm">Est. budget: <b>₹{cost.toLocaleString("en-IN")}</b> (entries + food + transport)</span>
+        <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
           {!optimized ? (
-            <button onClick={() => { setOptimized(true); onReward(80); }} className="ml-auto rounded-full bg-primary px-5 py-2.5 font-semibold text-primary-foreground shadow transition hover:bg-saffron">✨ Optimize My Route</button>
+            <button onClick={() => { setOptimized(true); onReward(80); }} className="rounded-full bg-primary px-5 py-2.5 font-semibold text-primary-foreground shadow transition hover:bg-saffron">✨ Optimize My Route</button>
           ) : (
-            <button onClick={() => setOptimized(false)} className="ml-auto rounded-full border px-5 py-2.5 text-sm">View original</button>
+            <button onClick={() => setOptimized(false)} className="rounded-full border px-5 py-2.5 text-sm">View original</button>
           )}
         </div>
       </div>
       <div className="rounded-2xl bg-indigo-deep p-6 text-primary-foreground shadow">
         <h3 className="text-2xl text-gold">Before vs after</h3>
         <table className="mt-4 w-full text-sm">
-          <thead><tr className="text-left opacity-70"><th className="py-2">Metric</th><th>Original</th><th>Smart</th></tr></thead>
+          <thead><tr className="text-left opacity-70"><th className="py-2">Metric</th><th>Original</th><th>Current Plan</th></tr></thead>
           <tbody className="[&_td]:border-t [&_td]:border-primary-foreground/15 [&_td]:py-2.5">
-            <tr><td>Crowd exposure</td><td>{origAvg}/100</td><td className="font-bold text-gold">{optimized ? avg : "—"}/100</td></tr>
-            <tr><td>Waiting time</td><td>110 min</td><td className="font-bold text-gold">{optimized ? "35 min" : "—"}</td></tr>
-            <tr><td>Travel time</td><td>95 min</td><td className="font-bold text-gold">{optimized ? "70 min" : "—"}</td></tr>
-            <tr><td>Hidden gems</td><td>0</td><td className="font-bold text-gold">{optimized ? 2 : "—"}</td></tr>
-            <tr><td>Rewards</td><td>0</td><td className="font-bold text-gold">{optimized ? "+80 pts" : "—"}</td></tr>
+            <tr><td>Crowd exposure</td><td>{origAvg}/100</td><td className="font-bold text-gold">{avg}/100</td></tr>
+            <tr><td>Waiting time</td><td>110 min</td><td className="font-bold text-gold">{hasReplacements ? "45 min" : optimized ? "35 min" : "110 min"}</td></tr>
+            <tr><td>Travel time</td><td>95 min</td><td className="font-bold text-gold">{hasReplacements ? "75 min" : optimized ? "70 min" : "95 min"}</td></tr>
+            <tr><td>Hidden gems</td><td>0</td><td className="font-bold text-gold">{stops.filter((s) => !s.food && byId(s.id).gem).length}</td></tr>
+            <tr><td>Rewards</td><td>0</td><td className="font-bold text-gold">{hasReplacements ? "+20 pts" : optimized ? "+80 pts" : "—"}</td></tr>
           </tbody>
         </table>
-        <p className="mt-4 text-xs opacity-70">Illustrative prototype values.</p>
+        <p className="mt-4 text-xs opacity-70">Estimates dynamically reflect active destination replacements.</p>
       </div>
     </div>
   );
@@ -236,30 +367,143 @@ export function Forecast({ pulseAdj }: { pulseAdj: Record<string, number> }) {
 }
 
 /* ---------------- Hidden gems ---------------- */
-export function HiddenGems() {
-  const [hot, setHot] = useState("amber");
-  const hotspots = PLACES.filter((p) => p.alternatives);
+export interface HiddenGemsProps {
+  plan?: Plan;
+  onShowOnMap?: (placeId: string) => void;
+  onReplaceInRoute?: (hotspotId: string, gemId: string) => void;
+  onRemoveFromRoute?: (hotspotId: string, gemId?: string) => void;
+}
+
+export function HiddenGems({
+  plan,
+  onShowOnMap,
+  onReplaceInRoute,
+  onRemoveFromRoute,
+}: HiddenGemsProps = {}) {
+  const defaultHot =
+    plan?.must && PLACES.some((p) => p.id === plan.must && p.alternatives && p.alternatives.length > 0)
+      ? plan.must
+      : "amber";
+  const [hot, setHot] = useState(defaultHot);
+  const hotspots = PLACES.filter((p) => p.alternatives && p.alternatives.length > 0);
   const p = byId(hot);
-  const dist: Record<string, string> = { jaigarh: "3.5 km", panna: "4.2 km", sisodia: "8 km", albert: "1.8 km", patrika: "6 km", citypalace: "0.4 km", anokhi: "11 km", jalmahal: "5 km", kanak: "1 km", tripolia: "1.2 km", sanganer: "13 km" };
+  const recommendations = rankAlternatives(p, PLACES, { limit: 3, gemsOnly: true });
+
   return (
     <div>
       <div className="mb-6 flex flex-wrap justify-center gap-2">
-        {hotspots.map((h) => <button key={h.id} onClick={() => setHot(h.id)} className={`rounded-full border px-4 py-1.5 text-sm ${hot === h.id ? "border-crowd-critical bg-crowd-critical text-primary-foreground" : "bg-card"}`}>{h.name}</button>)}
-      </div>
-      <p className="mb-6 text-center text-muted-foreground">{p.name} is busy. Try these nearby places with a similar vibe:</p>
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-        {[...(p.alternatives ?? []), ...(hot === "amber" ? ["sisodia"] : [])].map((id, i) => {
-          const g = byId(id);
-          const s = crowdScore(g, { day: "Sun", hour: 16, festival: false, weather: "clear" }).score;
-          const match = Math.round((g.tags.filter((t) => p.tags.includes(t)).length / p.tags.length) * 40 + 55);
+        {hotspots.map((h) => {
+          const isReplaced = Boolean(plan?.stopReplacements?.[h.id]);
           return (
-            <div key={id} className="arch group border-2 border-gold bg-card p-6 pt-12 text-center shadow transition hover:-translate-y-1 hover:shadow-xl animate-in fade-in zoom-in-95" style={{ animationDelay: `${i * 100}ms`, animationFillMode: "both" }}>
-              <p className="font-display text-saffron">{g.hindi}</p>
-              <h3 className="text-2xl">{g.name}</h3>
-              <div className="my-3 flex justify-center gap-2"><Badge score={s} /><span className="rounded-full bg-gem px-2.5 py-0.5 text-xs font-bold text-primary-foreground">{Math.min(match, 98)}% vibe match</span></div>
-              <p className="text-sm">Matches: {g.tags.join(", ")}</p>
-              <p className="text-sm text-muted-foreground">{dist[id] ?? "3 km"} away · +{8 + i * 6} min travel</p>
-              <p className="mt-3 rounded-lg bg-secondary p-2 text-sm italic">“{g.update}”</p>
+            <button
+              key={h.id}
+              onClick={() => setHot(h.id)}
+              className={`rounded-full border px-4 py-1.5 text-sm transition ${
+                hot === h.id
+                  ? "border-crowd-critical bg-crowd-critical text-primary-foreground shadow"
+                  : "bg-card hover:border-primary/50"
+              }`}
+            >
+              {h.name}
+              {isReplaced && (
+                <span className="ml-1.5 rounded-full bg-emerald-600 px-1.5 py-0.5 text-[10px] text-white">
+                  ✓
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      <p className="mb-6 text-center text-sm text-muted-foreground">
+        {p.name} is busy. Try these nearby places with a similar vibe:
+      </p>
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 items-stretch">
+        {recommendations.map((rec, i) => {
+          const g = rec.place;
+          const s =
+            rec.predictedCrowdScore !== null
+              ? rec.predictedCrowdScore
+              : crowdScore(g, { day: "Sun", hour: 16, festival: false, weather: "clear" }).score;
+          const isReplacedInPlan = plan?.stopReplacements?.[hot] === g.id;
+          const distFormatted = formatDistance(rec.straightLineDistanceKm);
+
+          return (
+            <div
+              key={g.id}
+              className={`arch group flex flex-col justify-between border-2 ${
+                isReplacedInPlan ? "border-emerald-600 ring-2 ring-emerald-500/20" : "border-gold"
+              } bg-card px-6 pt-12 pb-6 text-center shadow-md transition-all hover:-translate-y-1 hover:shadow-xl animate-in fade-in zoom-in-95 h-full`}
+              style={{ animationDelay: `${i * 100}ms`, animationFillMode: "both" }}
+            >
+              <div className="flex flex-col items-center flex-1">
+                {/* 1. Hindi and English destination names */}
+                <p className="font-display text-sm text-saffron tracking-wide">{g.hindi}</p>
+                <h3 className="mt-1 text-2xl font-bold font-serif text-foreground leading-snug">
+                  {g.name}
+                </h3>
+
+                {/* 2. Numeric crowd score/category */}
+                <div className="mt-3 flex items-center justify-center">
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold ${levelClass[level(s)]}`}
+                    title={`Crowd score: ${s}/100 (${level(s)})`}
+                  >
+                    {s}/100 · {level(s)}
+                  </span>
+                </div>
+
+                {/* 3. Highlighted "Why this alternative?" recommendation reason */}
+                <div className="mt-4 w-full rounded-xl border border-primary/20 bg-primary/5 p-3.5 text-left">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-primary">
+                    Why this alternative?
+                  </p>
+                  <p className="mt-1 text-xs text-foreground/90 leading-relaxed font-sans">
+                    {rec.reason}
+                  </p>
+                </div>
+
+                {/* 4. Short italic factual destination description */}
+                <p className="mt-3.5 text-xs italic text-muted-foreground leading-relaxed px-1">
+                  {g.update}
+                </p>
+
+                {/* 5. One compact distance indicator */}
+                <div className="mt-3.5 flex items-center justify-center text-xs text-muted-foreground">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-secondary/80 border border-border/50 px-3 py-1 font-medium">
+                    📍 {distFormatted} away
+                  </span>
+                </div>
+              </div>
+
+              {/* 6. Divider */}
+              <div className="my-5 w-full border-t border-border/60" />
+
+              {/* 7. Two actions: Choose this place and Show on map */}
+              <div className="grid grid-cols-2 gap-2 w-full mt-auto">
+                <button
+                  type="button"
+                  onClick={() =>
+                    isReplacedInPlan
+                      ? onRemoveFromRoute?.(hot, g.id)
+                      : onReplaceInRoute?.(hot, g.id)
+                  }
+                  className={`w-full rounded-xl px-3 py-2 text-xs font-semibold shadow-sm transition ${
+                    isReplacedInPlan
+                      ? "border border-emerald-600 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300"
+                      : "bg-primary text-primary-foreground hover:bg-saffron hover:scale-[1.02]"
+                  }`}
+                >
+                  {isReplacedInPlan ? "✓ Chosen (Remove)" : "Choose this place"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onShowOnMap?.(g.id)}
+                  className="w-full rounded-xl border border-border bg-secondary/80 px-3 py-2 text-xs font-semibold text-foreground transition hover:border-primary hover:bg-card"
+                >
+                  Show on map
+                </button>
+              </div>
             </div>
           );
         })}

@@ -244,19 +244,22 @@ export default function LeafletMapInner({
                   🕘 Best: <b>{p.best}</b>
                 </p>
 
-                {p.alternatives && p.alternatives.length > 0 && (
+                {p.alternatives && p.alternatives.length > 0 && p.alternatives[0] && (
                   <p className="text-[11px] text-muted-foreground">
                     Quieter alternative:{" "}
                     <button
                       onClick={() => {
-                        const altPlace = byId(p.alternatives![0]);
-                        setSel(altPlace);
-                        setFlyTarget([altPlace.lat, altPlace.lng]);
-                        setFlyZoom(14);
+                        const altId = p.alternatives?.[0];
+                        if (altId) {
+                          const altPlace = byId(altId);
+                          setSel(altPlace);
+                          setFlyTarget([altPlace.lat, altPlace.lng]);
+                          setFlyZoom(14);
+                        }
                       }}
                       className="underline font-semibold text-primary"
                     >
-                      {byId(p.alternatives[0]).name}
+                      {byId(p.alternatives[0]!).name}
                     </button>
                   </p>
                 )}

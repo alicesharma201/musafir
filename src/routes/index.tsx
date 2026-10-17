@@ -5,6 +5,8 @@ import {
   SectionTitle, Planner, Itinerary, Forecast, HiddenGems, LiveMap, Pulse, Extras,
   type Plan, type Report,
 } from "@/components/musafir/Sections";
+import { byId } from "@/lib/jaipur-data";
+import { applyStopReplacement, removeStopReplacement } from "@/lib/recommendation";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -38,12 +40,43 @@ function Index() {
   const [pulseAdj, setPulseAdj] = useState<Record<string, number>>({});
   const [toast, setToast] = useState<string | null>(null);
 
+  // Stage 2: Map focus and destination selection state
+  const [selectedMapPlaceId, setSelectedMapPlaceId] = useState<string | null>(null);
+  const [mapFocusKey, setMapFocusKey] = useState<number>(0);
+
   const reward = (n: number, msg = `+${n} Musafir points!`) => {
     setPoints((p) => p + n);
     setToast(msg);
     setTimeout(() => setToast(null), 2200);
   };
   const go = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+
+  const handleShowOnMap = (placeId: string) => {
+    setSelectedMapPlaceId(placeId);
+    setMapFocusKey((k) => k + 1);
+    go("map");
+  };
+
+  const handleReplaceInRoute = (hotspotId: string, gemId: string) => {
+    setPlan((prevPlan) => applyStopReplacement(prevPlan, hotspotId, gemId));
+    setShown(true);
+    reward(20, `Added ${byId(gemId).name} to itinerary! (+20 pts)`);
+  };
+
+  const handleRemoveFromRoute = (hotspotId: string) => {
+    setPlan((prevPlan) => removeStopReplacement(prevPlan, hotspotId));
+    setToast(`Restored original stop for ${byId(hotspotId).name}`);
+    setTimeout(() => setToast(null), 2000);
+  };
+
+  const handleResetReplacements = () => {
+    setPlan((prevPlan) => ({
+      ...prevPlan,
+      stopReplacements: undefined,
+    }));
+    setToast("Reset all itinerary stops to original");
+    setTimeout(() => setToast(null), 2000);
+  };
 
   return (
     <div className="min-h-screen">
@@ -78,7 +111,13 @@ function Index() {
           <Planner plan={plan} setPlan={(p) => { setPlan(p); setOptimized(false); }} onGenerate={() => { setShown(true); setOptimized(false); setTimeout(() => go("itinerary"), 50); }} />
           {shown && (
             <div id="itinerary" className="mt-14 scroll-mt-24">
-              <Itinerary plan={plan} optimized={optimized} setOptimized={setOptimized} onReward={(n) => reward(n, "Smart Route unlocked · +80 points!")} />
+              <Itinerary
+                plan={plan}
+                optimized={optimized}
+                setOptimized={setOptimized}
+                onReward={(n) => reward(n, "Smart Route unlocked · +80 points!")}
+                onResetReplacements={handleResetReplacements}
+              />
             </div>
           )}
         </section>
@@ -92,13 +131,24 @@ function Index() {
 
         <section id="gems" className="mx-auto max-w-7xl scroll-mt-20 px-4 py-20">
           <SectionTitle kicker="Step 3 · छुपे रत्न" title="Nearby Hidden Gems" sub="Not random swaps — a crowded fort leads to quieter heritage, views and architecture." />
-          <HiddenGems />
+          <HiddenGems
+            plan={plan}
+            onShowOnMap={handleShowOnMap}
+            onReplaceInRoute={handleReplaceInRoute}
+            onRemoveFromRoute={handleRemoveFromRoute}
+          />
         </section>
 
         <section id="map" className="scroll-mt-20 bg-secondary/60 py-20">
           <div className="mx-auto max-w-7xl px-4">
             <SectionTitle kicker="Step 4 · जीवंत नक्शा" title="Musafir Live Map" sub="Drag through the day and tap any marker to see crowd pressure across Jaipur." />
-            <LiveMap pulseAdj={pulseAdj} reports={reports} onOptimize={(id) => { setPlan({ ...plan, must: id }); setShown(true); setOptimized(false); setTimeout(() => go("itinerary"), 50); }} />
+            <LiveMap
+              pulseAdj={pulseAdj}
+              reports={reports}
+              selectedPlaceId={selectedMapPlaceId}
+              focusKey={mapFocusKey}
+              onOptimize={(id) => { setPlan({ ...plan, must: id }); setShown(true); setOptimized(false); setTimeout(() => go("itinerary"), 50); }}
+            />
           </div>
         </section>
 
