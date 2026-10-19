@@ -1,6 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
-import { PLACES, type Place, crowdScore, level } from "@/lib/jaipur-data";
+import { useEffect, useState } from "react";
+import { PLACES, type Place, level } from "@/lib/jaipur-data";
+import { predictCrowd, type VerifiedObservation } from "@/lib/crowd-service";
+import { observationsRepository, type CrowdReportRecord } from "@/lib/observations-repository";
 import {
   Users,
   AlertTriangle,
@@ -18,8 +20,18 @@ import {
   MapPin,
   Clock,
   Eye,
-  BellRing
+  BellRing,
+  XCircle,
+  Database,
+  Download,
+  FileSpreadsheet,
+  Layers,
+  Lock,
+  Scale,
+  CheckCircle,
+  FileText,
 } from "lucide-react";
+import { formatIstDate } from "@/lib/ml-pipeline";
 import {
   AreaChart,
   Area,
@@ -32,14 +44,18 @@ import {
   PieChart,
   Pie,
   Cell,
-  Legend
+  Legend,
 } from "recharts";
 
 export const Route = createFileRoute("/admin")({
   head: () => ({
     meta: [
-      { title: "Musafir Admin — Jaipur Crowd Command Center" },
-      { name: "description", content: "Real-time crowd intelligence, visitor capacity management, and emergency broadcast dispatch for Jaipur tourism authority." },
+      { title: "Raahi Admin — Jaipur Crowd Command Center" },
+      {
+        name: "description",
+        content:
+          "Real-time crowd intelligence, visitor capacity management, and emergency broadcast dispatch for Jaipur tourism authority.",
+      },
     ],
   }),
   component: AdminDashboard,
@@ -50,6 +66,7 @@ interface SiteState extends Place {
   capacityLimit: number;
   sensorStatus: "online" | "degraded" | "offline";
   overrideActive: boolean;
+  predictionType: "observed" | "estimated" | "insufficient_data";
 }
 
 interface IncidentReport {
@@ -79,38 +96,99 @@ const ZONE_DATA = [
   { name: "Outer Arts (Patrika, Sanganer)", value: 11, color: "#d4af37" },
 ];
 
-export function AdminDashboard() {
-  const [activeTab, setActiveTab] = useState<"overview" | "sites" | "incidents" | "broadcast">("overview");
+function AdminDashboard() {
+  const [activeTab, setActiveTab] = useState<
+    "overview" | "sites" | "incidents" | "broadcast" | "ml-readiness"
+  >("overview");
   const [searchQuery, setSearchQuery] = useState("");
   const [filterLevel, setFilterLevel] = useState<string>("all");
   const [broadcastMsg, setBroadcastMsg] = useState("");
-  const [activeBroadcast, setActiveBroadcast] = useState<string | null>(
-    "Traffic advisory: Suraj Pol Amber Fort shuttle rerouting active. Diverting visitors to Jaigarh & Panna Meena Kund."
-  );
   const [broadcastStatus, setBroadcastStatus] = useState<string | null>(null);
 
-  // Initialize site state with initial calculated scores
-  const [sites, setSites] = useState<SiteState[]>(() => {
-    return PLACES.map((p) => {
-      const calc = crowdScore(p, { day: "Sun", hour: 17, festival: false, weather: "clear" });
-      return {
-        ...p,
-        liveScore: calc.score,
-        capacityLimit: p.gem ? 350 : 2500,
-        sensorStatus: p.id === "nahargarh" ? "degraded" : "online",
-        overrideActive: false,
-      };
+  // Persistent repository bindings
+  const [reports, setReports] = useState<CrowdReportRecord[]>(() =>
+    observationsRepository.getReports("all"),
+  );
+  const [observations, setObservations] = useState<VerifiedObservation[]>(() =>
+    observationsRepository.getActiveObservations(),
+  );
+  const [allObservations, setAllObservations] = useState<VerifiedObservation[]>(() =>
+    observationsRepository.getAllObservations(),
+  );
+  const [adminOverrides, setAdminOverrides] = useState<Record<string, number>>(() =>
+    observationsRepository.getAdminOverrides(),
+  );
+  const [activeBroadcast, setActiveBroadcast] = useState<string | null>(() =>
+    observationsRepository.getActiveBroadcast(),
+  );
+
+  // Sync with persistent repository
+  useEffect(() => {
+    const unsubscribe = observationsRepository.subscribe(() => {
+      setReports(observationsRepository.getReports("all"));
+      setObservations(observationsRepository.getActiveObservations());
+      setAllObservations(observationsRepository.getAllObservations());
+      setAdminOverrides(observationsRepository.getAdminOverrides());
+      setActiveBroadcast(observationsRepository.getActiveBroadcast());
     });
+    return unsubscribe;
+  }, []);
+
+  const handleDownloadCsv = () => {
+    const csvContent = observationsRepository.exportTrainingCsv(0);
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `raahi_jaipur_crowd_training_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadJson = () => {
+    const data = observationsRepository.getTrainingDataset(0);
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `raahi_jaipur_crowd_dataset_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Compute live site metrics from canonical crowd service
+  const sites: SiteState[] = PLACES.map((p) => {
+    const override = adminOverrides[p.id] ?? 0;
+    const pred = predictCrowd(p.id, {
+      day: "Sun",
+      hour: 17,
+      festival: false,
+      weather: "clear",
+      observations,
+      adminOverrideDelta: override,
+    });
+    return {
+      ...p,
+      liveScore: pred.score,
+      capacityLimit: p.gem ? 350 : 2500,
+      sensorStatus: p.id === "nahargarh" ? "degraded" : "online",
+      overrideActive: override !== 0,
+      predictionType: pred.predictionType,
+    };
   });
 
   const [incidents, setIncidents] = useState<IncidentReport[]>([
     {
       id: "INC-101",
-      placeName: "Amber Fort",
+      placeName: "Amer Fort",
       type: "queue",
       reporter: "Jaipur Police Unit 4",
       time: "4 mins ago",
-      description: "Suraj Pol entrance bottleneck: ~45 min wait time. Requesting gate surge throttle.",
+      description: "Suraj Pol entrance bottleneck: ~45 min wait time. Gate surge throttle advised.",
       verified: true,
     },
     {
@@ -126,61 +204,62 @@ export function AdminDashboard() {
       id: "INC-103",
       placeName: "Bapu Bazaar",
       type: "parking",
-      reporter: "Smart Parking Sensor 12",
+      reporter: "Sanganeri Gate Police Post",
       time: "28 mins ago",
       description: "Sanganeri Gate 2-wheeler bay is at 98% occupancy.",
       verified: true,
     },
   ]);
 
-  // Adjust score via admin controls
+  // Adjust score via admin controls (persists across sessions)
   const handleScoreAdjust = (id: string, delta: number) => {
-    setSites((prev) =>
-      prev.map((s) => {
-        if (s.id === id) {
-          const newScore = Math.max(5, Math.min(99, s.liveScore + delta));
-          return { ...s, liveScore: newScore, overrideActive: true };
-        }
-        return s;
-      })
-    );
+    const current = adminOverrides[id] ?? 0;
+    observationsRepository.setAdminOverride(id, current + delta);
   };
 
   const handleToggleGate = (id: string) => {
-    setSites((prev) =>
-      prev.map((s) => {
-        if (s.id === id) {
-          const newScore = s.liveScore >= 80 ? 45 : 85;
-          return { ...s, liveScore: newScore, overrideActive: !s.overrideActive };
-        }
-        return s;
-      })
-    );
+    const current = adminOverrides[id] ?? 0;
+    observationsRepository.setAdminOverride(id, current !== 0 ? 0 : 20);
+  };
+
+  const handleVerifyTouristReport = (reportId: string) => {
+    observationsRepository.moderateReport(reportId, "verify", "DoT Command Officer");
+  };
+
+  const handleRejectTouristReport = (reportId: string) => {
+    observationsRepository.moderateReport(reportId, "reject", "DoT Command Officer");
   };
 
   const handleVerifyIncident = (incId: string) => {
     setIncidents((prev) =>
-      prev.map((inc) => (inc.id === incId ? { ...inc, verified: !inc.verified } : inc))
+      prev.map((inc) => (inc.id === incId ? { ...inc, verified: !inc.verified } : inc)),
     );
   };
 
   const handleSendBroadcast = (e: React.FormEvent) => {
     e.preventDefault();
     if (!broadcastMsg.trim()) return;
-    setActiveBroadcast(broadcastMsg);
-    setBroadcastStatus("Broadcast sent to all 14,800 active Musafir mobile users!");
+    observationsRepository.setActiveBroadcast(broadcastMsg);
+    setBroadcastStatus("Broadcast sent to all active Raahi mobile users and live app!");
     setBroadcastMsg("");
     setTimeout(() => setBroadcastStatus(null), 4000);
   };
 
+  const handleClearBroadcast = () => {
+    observationsRepository.setActiveBroadcast(null);
+  };
+
   // High-level metrics
   const totalSites = sites.length;
-  const criticalSites = sites.filter((s) => level(s.liveScore) === "Critical" || level(s.liveScore) === "High").length;
+  const criticalSites = sites.filter(
+    (s) => level(s.liveScore) === "Critical" || level(s.liveScore) === "High",
+  ).length;
   const avgCrowd = Math.round(sites.reduce((acc, s) => acc + s.liveScore, 0) / sites.length);
   const activeGems = sites.filter((s) => s.gem).length;
 
   const filteredSites = sites.filter((s) => {
-    const matchesSearch = s.name.toLowerCase().includes(searchQuery.toLowerCase()) || s.hindi.includes(searchQuery);
+    const matchesSearch =
+      s.name.toLowerCase().includes(searchQuery.toLowerCase()) || s.hindi.includes(searchQuery);
     const lvl = level(s.liveScore);
     const matchesLevel = filterLevel === "all" || lvl.toLowerCase() === filterLevel.toLowerCase();
     return matchesSearch && matchesLevel;
@@ -201,30 +280,39 @@ export function AdminDashboard() {
           <div className="h-4 w-px bg-neutral-800 hidden sm:block" />
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-display font-bold text-xl tracking-tight text-amber-500">मुसाफ़िर Command</span>
+              <span className="font-display font-bold text-xl tracking-tight text-amber-500">
+                राही Command
+              </span>
+              <span className="text-xs text-neutral-400 font-semibold">| Raahi DoT</span>
               <span className="bg-red-500/20 border border-red-500/40 text-red-400 px-2 py-0.5 rounded text-[11px] font-mono font-bold uppercase tracking-wider flex items-center gap-1">
                 <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
                 Live Ops
               </span>
             </div>
-            <p className="text-xs text-neutral-400">Jaipur Smart Tourism & Crowd Dispersal Authority</p>
+            <p className="text-xs text-neutral-400">
+              Jaipur Tourism & Crowd Dispersal Authority (DoT)
+            </p>
           </div>
         </div>
 
         {/* Global Action Nav */}
         <div className="flex items-center gap-2">
-          <div className="hidden md:flex items-center gap-1 text-xs text-neutral-400 mr-2">
-            <Radio className="w-3.5 h-3.5 text-emerald-400 animate-ping" />
-            <span>Telemetry: 38/40 LoRaWAN Beacons Online</span>
+          <div className="hidden md:flex items-center gap-1.5 text-xs text-neutral-300 mr-2 bg-neutral-800/80 px-2.5 py-1 rounded border border-neutral-700">
+            <Database className="w-3.5 h-3.5 text-amber-400" />
+            <span>
+              {observationsRepository.getBackendMode() === "supabase"
+                ? "● Supabase PostgreSQL Synced"
+                : "○ Local Storage (Credentials Pending)"}
+            </span>
           </div>
           <button
-            onClick={() => setActiveBroadcast(null)}
+            onClick={handleClearBroadcast}
             className="text-xs px-2.5 py-1.5 rounded bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-neutral-300 transition"
           >
             Clear Banner
           </button>
           <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 px-3 py-1 text-xs font-medium text-amber-300">
-            Jaipur Central Time: 17:45 IST
+            Jaipur IST: 17:45
           </div>
         </div>
       </header>
@@ -256,6 +344,7 @@ export function AdminDashboard() {
             { id: "sites", label: "Site Capacity & Overrides", icon: Sliders },
             { id: "incidents", label: "Community & Police Pulse", icon: ShieldAlert },
             { id: "broadcast", label: "City Broadcast Dispatch", icon: Send },
+            { id: "ml-readiness", label: "ML Pipeline & Training Readiness", icon: Database },
           ].map((tab) => {
             const Icon = tab.icon;
             const active = activeTab === tab.id;
@@ -283,23 +372,33 @@ export function AdminDashboard() {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-neutral-900/80 border border-neutral-800 rounded-xl p-4 flex flex-col justify-between">
             <div className="flex items-center justify-between text-neutral-400">
-              <span className="text-xs uppercase font-medium tracking-wider">Est. Live Visitors</span>
-              <Users className="w-4 h-4 text-sky-400" />
+              <span className="text-xs uppercase font-medium tracking-wider">
+                Active Observations
+              </span>
+              <Activity className="w-4 h-4 text-emerald-400" />
             </div>
             <div className="mt-2">
-              <span className="text-2xl lg:text-3xl font-bold font-mono text-white">14,820</span>
-              <span className="text-xs text-emerald-400 ml-2 font-medium">↑ 8% vs yesterday</span>
+              <span className="text-2xl lg:text-3xl font-bold font-mono text-emerald-400">
+                {observations.length}
+              </span>
+              <span className="text-xs text-neutral-400 ml-2 font-medium">active reports</span>
             </div>
-            <p className="text-[11px] text-neutral-500 mt-1">Aggregated sensor & app telemetry</p>
+            <p className="text-[11px] text-neutral-500 mt-1">
+              Verified on-ground traveler telemetry
+            </p>
           </div>
 
           <div className="bg-neutral-900/80 border border-neutral-800 rounded-xl p-4 flex flex-col justify-between">
             <div className="flex items-center justify-between text-neutral-400">
-              <span className="text-xs uppercase font-medium tracking-wider">Avg City Congestion</span>
+              <span className="text-xs uppercase font-medium tracking-wider">
+                Avg City Congestion
+              </span>
               <TrendingUp className="w-4 h-4 text-amber-400" />
             </div>
             <div className="mt-2 flex items-baseline">
-              <span className="text-2xl lg:text-3xl font-bold font-mono text-amber-400">{avgCrowd}%</span>
+              <span className="text-2xl lg:text-3xl font-bold font-mono text-amber-400">
+                {avgCrowd}%
+              </span>
               <span className="text-xs text-neutral-400 ml-2 font-medium">Moderate</span>
             </div>
             <div className="w-full bg-neutral-800 h-1.5 rounded-full mt-2 overflow-hidden">
@@ -316,7 +415,9 @@ export function AdminDashboard() {
               <AlertTriangle className="w-4 h-4 text-red-400" />
             </div>
             <div className="mt-2">
-              <span className="text-2xl lg:text-3xl font-bold font-mono text-red-400">{criticalSites}</span>
+              <span className="text-2xl lg:text-3xl font-bold font-mono text-red-400">
+                {criticalSites}
+              </span>
               <span className="text-xs text-neutral-400 ml-2">of {totalSites} monuments</span>
             </div>
             <p className="text-[11px] text-red-400/80 mt-1">Amber Fort, Hawa Mahal, Bapu Bazaar</p>
@@ -324,11 +425,15 @@ export function AdminDashboard() {
 
           <div className="bg-neutral-900/80 border border-neutral-800 rounded-xl p-4 flex flex-col justify-between">
             <div className="flex items-center justify-between text-neutral-400">
-              <span className="text-xs uppercase font-medium tracking-wider">Dispersal Alternatives</span>
+              <span className="text-xs uppercase font-medium tracking-wider">
+                Dispersal Alternatives
+              </span>
               <Compass className="w-4 h-4 text-emerald-400" />
             </div>
             <div className="mt-2">
-              <span className="text-2xl lg:text-3xl font-bold font-mono text-emerald-400">{activeGems} Gems</span>
+              <span className="text-2xl lg:text-3xl font-bold font-mono text-emerald-400">
+                {activeGems} Gems
+              </span>
               <span className="text-xs text-emerald-300 ml-2">absorbing 2,400+ pax</span>
             </div>
             <p className="text-[11px] text-neutral-500 mt-1">Panna Meena, Jaigarh, Albert Hall</p>
@@ -348,7 +453,9 @@ export function AdminDashboard() {
                       <Activity className="w-4 h-4 text-amber-500" />
                       Jaipur Hourly Visitor Flow vs. Safe Capacity
                     </h3>
-                    <p className="text-xs text-neutral-400">Live counts vs AI predictive forecast across all 16 monuments</p>
+                    <p className="text-xs text-neutral-400">
+                      Live counts vs AI predictive forecast across all 16 monuments
+                    </p>
                   </div>
                   <span className="text-xs font-mono bg-neutral-800 border border-neutral-700 px-2 py-1 rounded text-neutral-300">
                     Real-time (Sunday)
@@ -356,7 +463,10 @@ export function AdminDashboard() {
                 </div>
                 <div className="h-64 w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={INITIAL_HOURLY_DATA} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                    <AreaChart
+                      data={INITIAL_HOURLY_DATA}
+                      margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+                    >
                       <defs>
                         <linearGradient id="actualGrad" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="5%" stopColor="#d94f30" stopOpacity={0.4} />
@@ -370,11 +480,33 @@ export function AdminDashboard() {
                       <XAxis dataKey="hour" stroke="#737373" fontSize={11} tickLine={false} />
                       <YAxis stroke="#737373" fontSize={11} tickLine={false} />
                       <Tooltip
-                        contentStyle={{ backgroundColor: "#171717", borderColor: "#404040", borderRadius: "8px", fontSize: "12px" }}
+                        contentStyle={{
+                          backgroundColor: "#171717",
+                          borderColor: "#404040",
+                          borderRadius: "8px",
+                          fontSize: "12px",
+                        }}
                         itemStyle={{ color: "#f5f5f5" }}
                       />
-                      <Area type="monotone" dataKey="actual" name="Actual Footfall" stroke="#d94f30" strokeWidth={2.5} fillOpacity={1} fill="url(#actualGrad)" />
-                      <Area type="monotone" dataKey="forecast" name="AI Forecast" stroke="#d4af37" strokeDasharray="4 4" strokeWidth={2} fillOpacity={1} fill="url(#forecastGrad)" />
+                      <Area
+                        type="monotone"
+                        dataKey="actual"
+                        name="Actual Footfall"
+                        stroke="#d94f30"
+                        strokeWidth={2.5}
+                        fillOpacity={1}
+                        fill="url(#actualGrad)"
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="forecast"
+                        name="AI Forecast"
+                        stroke="#d4af37"
+                        strokeDasharray="4 4"
+                        strokeWidth={2}
+                        fillOpacity={1}
+                        fill="url(#forecastGrad)"
+                      />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
@@ -404,7 +536,12 @@ export function AdminDashboard() {
                         ))}
                       </Pie>
                       <Tooltip
-                        contentStyle={{ backgroundColor: "#171717", borderColor: "#404040", borderRadius: "8px", fontSize: "12px" }}
+                        contentStyle={{
+                          backgroundColor: "#171717",
+                          borderColor: "#404040",
+                          borderRadius: "8px",
+                          fontSize: "12px",
+                        }}
                       />
                     </PieChart>
                   </ResponsiveContainer>
@@ -413,7 +550,10 @@ export function AdminDashboard() {
                   {ZONE_DATA.map((z) => (
                     <div key={z.name} className="flex items-center justify-between">
                       <span className="flex items-center gap-2 text-neutral-300">
-                        <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: z.color }} />
+                        <span
+                          className="w-2.5 h-2.5 rounded-full"
+                          style={{ backgroundColor: z.color }}
+                        />
                         {z.name}
                       </span>
                       <span className="font-mono font-bold text-neutral-100">{z.value}%</span>
@@ -431,7 +571,9 @@ export function AdminDashboard() {
                     <ShieldAlert className="w-4 h-4 text-red-400" />
                     Congestion Threshold Watchlist
                   </h3>
-                  <p className="text-xs text-neutral-400">Places currently at High or Critical crowd capacity</p>
+                  <p className="text-xs text-neutral-400">
+                    Places currently at High or Critical crowd capacity
+                  </p>
                 </div>
                 <button
                   onClick={() => setActiveTab("sites")}
@@ -482,9 +624,12 @@ export function AdminDashboard() {
           <div className="bg-neutral-900/80 border border-neutral-800 rounded-xl p-5 space-y-4">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div>
-                <h3 className="font-semibold text-lg text-neutral-100">Live Monument Capacity & Throttle Controller</h3>
+                <h3 className="font-semibold text-lg text-neutral-100">
+                  Live Monument Capacity & Throttle Controller
+                </h3>
                 <p className="text-xs text-neutral-400">
-                  Override crowd metrics, activate entry throttles, and push automated detour suggestions to tourists.
+                  Override crowd metrics, activate entry throttles, and push automated detour
+                  suggestions to tourists.
                 </p>
               </div>
 
@@ -534,10 +679,10 @@ export function AdminDashboard() {
                       lvl === "Critical"
                         ? "bg-red-500/20 text-red-400 border-red-500/40"
                         : lvl === "High"
-                        ? "bg-amber-500/20 text-amber-400 border-amber-500/40"
-                        : lvl === "Moderate"
-                        ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/40"
-                        : "bg-emerald-500/20 text-emerald-400 border-emerald-500/40";
+                          ? "bg-amber-500/20 text-amber-400 border-amber-500/40"
+                          : lvl === "Moderate"
+                            ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/40"
+                            : "bg-emerald-500/20 text-emerald-400 border-emerald-500/40";
 
                     return (
                       <tr key={place.id} className="hover:bg-neutral-800/40 transition">
@@ -561,18 +706,21 @@ export function AdminDashboard() {
                           {place.tags.slice(0, 2).join(", ")}
                         </td>
                         <td className="py-3 px-4">
-                          <div className="flex items-center gap-2">
-                            <span className={`px-2 py-0.5 rounded text-[11px] font-bold border ${badgeColor}`}>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[11px] font-bold border ${badgeColor}`}
+                            >
                               {lvl} ({place.liveScore})
                             </span>
-                            <div className="w-16 bg-neutral-800 h-1.5 rounded-full overflow-hidden hidden sm:block">
-                              <div
-                                className={`h-full ${
-                                  lvl === "Critical" ? "bg-red-500" : lvl === "High" ? "bg-amber-500" : "bg-emerald-500"
-                                }`}
-                                style={{ width: `${place.liveScore}%` }}
-                              />
-                            </div>
+                            <span
+                              className={`px-1.5 py-0.2 rounded text-[10px] font-medium border ${
+                                place.predictionType === "observed"
+                                  ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                                  : "bg-amber-500/15 text-amber-300 border-amber-500/30"
+                              }`}
+                            >
+                              {place.predictionType === "observed" ? "● Observed" : "○ Baseline"}
+                            </span>
                           </div>
                         </td>
                         <td className="py-3 px-4 text-neutral-300">
@@ -584,7 +732,9 @@ export function AdminDashboard() {
                         <td className="py-3 px-4">
                           <span
                             className={`inline-flex items-center gap-1 text-[11px] font-mono ${
-                              place.sensorStatus === "online" ? "text-emerald-400" : "text-amber-400"
+                              place.sensorStatus === "online"
+                                ? "text-emerald-400"
+                                : "text-amber-400"
                             }`}
                           >
                             <span
@@ -646,12 +796,117 @@ export function AdminDashboard() {
                     User crowd feedback, on-ground Jaipur police dispatches, and parking telemetry
                   </p>
                 </div>
-                <span className="text-xs bg-neutral-800 text-neutral-300 px-2 py-1 rounded border border-neutral-700">
-                  {incidents.filter((i) => !i.verified).length} Unverified
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-1 rounded">
+                    {reports.filter((r) => r.moderationStatus === "pending").length} Pending
+                    Traveler Reports
+                  </span>
+                  <span className="text-xs bg-neutral-800 text-neutral-300 px-2 py-1 rounded border border-neutral-700">
+                    {incidents.filter((i) => !i.verified).length} Unverified Incidents
+                  </span>
+                </div>
               </div>
 
+              {/* Tourist Pulse Reports (Live from Public App) */}
               <div className="space-y-3">
+                <div className="text-xs font-semibold uppercase tracking-wider text-amber-400 flex items-center gap-1.5 pt-2">
+                  <Activity className="w-3.5 h-3.5" />
+                  Live Traveler Check-In Reports ({reports.length})
+                </div>
+
+                {reports.map((r) => (
+                  <div
+                    key={r.id}
+                    className={`p-4 rounded-xl border transition ${
+                      r.moderationStatus === "verified"
+                        ? "bg-neutral-950/70 border-emerald-900/50"
+                        : r.moderationStatus === "rejected"
+                          ? "bg-neutral-950/70 border-red-900/50 opacity-60"
+                          : "bg-amber-950/20 border-amber-500/40"
+                    }`}
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-white text-sm">
+                            {r.destinationName}
+                          </span>
+                          <span className="text-xs text-neutral-400">({r.hindiName})</span>
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider ${
+                              r.statusLevel === "Quiet"
+                                ? "bg-emerald-500/20 text-emerald-300"
+                                : r.statusLevel === "Busy"
+                                  ? "bg-red-500/20 text-red-300"
+                                  : "bg-amber-500/20 text-amber-300"
+                            }`}
+                          >
+                            Reported: {r.statusLevel}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold ${
+                              r.moderationStatus === "verified"
+                                ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                                : r.moderationStatus === "rejected"
+                                  ? "bg-red-500/20 text-red-400 border border-red-500/30"
+                                  : "bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse"
+                            }`}
+                          >
+                            {r.moderationStatus === "verified"
+                              ? "● Verified in Model"
+                              : r.moderationStatus === "rejected"
+                                ? "✕ Flagged / Disregarded"
+                                : "⏳ Awaiting Review"}
+                          </span>
+                        </div>
+                        {r.tipText && (
+                          <p className="text-xs text-neutral-300 mt-1 italic">"{r.tipText}"</p>
+                        )}
+                        <div className="flex items-center gap-3 text-[11px] text-neutral-400 mt-2">
+                          <span>
+                            User: <strong className="text-neutral-300">{r.userAlias}</strong>
+                          </span>
+                          <span>•</span>
+                          <span>
+                            {new Date(r.submittedAt).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        {r.moderationStatus !== "verified" && (
+                          <button
+                            onClick={() => handleVerifyTouristReport(r.id)}
+                            className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-1 transition shadow-sm"
+                            title="Verify report and apply decay adjustment to live baseline model"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            Verify & Apply
+                          </button>
+                        )}
+                        {r.moderationStatus !== "rejected" && (
+                          <button
+                            onClick={() => handleRejectTouristReport(r.id)}
+                            className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-neutral-800 hover:bg-red-950/80 text-neutral-300 hover:text-red-300 border border-neutral-700 hover:border-red-800/60 flex items-center gap-1 transition"
+                            title="Reject report to prevent influencing crowd model"
+                          >
+                            <XCircle className="w-3.5 h-3.5" />
+                            Reject
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+
+                <div className="text-xs font-semibold uppercase tracking-wider text-neutral-400 flex items-center gap-1.5 pt-4 border-t border-neutral-800">
+                  <ShieldAlert className="w-3.5 h-3.5" />
+                  Police & Traffic Incidents
+                </div>
+
                 {incidents.map((inc) => (
                   <div
                     key={inc.id}
@@ -664,7 +919,9 @@ export function AdminDashboard() {
                     <div className="flex items-start justify-between gap-4">
                       <div>
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs font-bold text-neutral-400">{inc.id}</span>
+                          <span className="font-mono text-xs font-bold text-neutral-400">
+                            {inc.id}
+                          </span>
                           <span className="font-semibold text-white text-sm">{inc.placeName}</span>
                           <span className="px-2 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider bg-neutral-800 text-neutral-300 border border-neutral-700">
                             {inc.type}
@@ -672,7 +929,10 @@ export function AdminDashboard() {
                         </div>
                         <p className="text-xs text-neutral-300 mt-1">{inc.description}</p>
                         <div className="flex items-center gap-3 text-[11px] text-neutral-400 mt-2">
-                          <span>Reported by: <strong className="text-neutral-300">{inc.reporter}</strong></span>
+                          <span>
+                            Reported by:{" "}
+                            <strong className="text-neutral-300">{inc.reporter}</strong>
+                          </span>
                           <span>•</span>
                           <span>{inc.time}</span>
                         </div>
@@ -709,16 +969,21 @@ export function AdminDashboard() {
 
               <div className="space-y-3">
                 <div className="p-3 rounded-lg border border-neutral-800 bg-neutral-950/60 space-y-2">
-                  <div className="font-medium text-xs text-amber-400">Amer Fort Detour Playbook</div>
+                  <div className="font-medium text-xs text-amber-400">
+                    Amer Fort Detour Playbook
+                  </div>
                   <p className="text-[11px] text-neutral-400">
-                    Diverts 35% of incoming Amer tourists towards Jaigarh Fort & Panna Meena Kund with instant +20 bonus points.
+                    Diverts 35% of incoming Amer tourists towards Jaigarh Fort & Panna Meena Kund
+                    with instant +20 bonus points.
                   </p>
                   <button
                     onClick={() => {
                       handleScoreAdjust("amber", -15);
                       handleScoreAdjust("jaigarh", 10);
                       handleScoreAdjust("panna", 10);
-                      setActiveBroadcast("Playbook Executed: Amber Fort visitors rerouted to Jaigarh & Panna Meena Kund.");
+                      observationsRepository.setActiveBroadcast(
+                        "Advisory: Amber Fort entrance congested. Shuttle rerouted to Jaigarh & Panna Meena Kund (+20 bonus pts).",
+                      );
                     }}
                     className="w-full py-1.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 text-xs font-semibold transition"
                   >
@@ -729,13 +994,16 @@ export function AdminDashboard() {
                 <div className="p-3 rounded-lg border border-neutral-800 bg-neutral-950/60 space-y-2">
                   <div className="font-medium text-xs text-amber-400">Old City Bazaar Relief</div>
                   <p className="text-[11px] text-neutral-400">
-                    Balances footfall between Bapu Bazaar and Tripolia / Sanganer Craft Area to reduce narrow alley congestion.
+                    Balances footfall between Bapu Bazaar and Tripolia / Sanganer Craft Area to
+                    reduce narrow alley congestion.
                   </p>
                   <button
                     onClick={() => {
                       handleScoreAdjust("bapu", -12);
                       handleScoreAdjust("tripolia", 8);
-                      setActiveBroadcast("Playbook Executed: Bapu Bazaar footfall shifted towards Tripolia & Sanganer.");
+                      observationsRepository.setActiveBroadcast(
+                        "Advisory: Bapu Bazaar pedestrian lane packed. Diverting shoppers to Tripolia & Sanganer crafts.",
+                      );
                     }}
                     className="w-full py-1.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 text-xs font-semibold transition"
                   >
@@ -756,7 +1024,8 @@ export function AdminDashboard() {
                 Citywide Tourist Push Notification Broadcast
               </h3>
               <p className="text-xs text-neutral-400 mt-1">
-                Broadcast official travel advisories, parking capacity notices, and dynamic incentives directly to all users exploring Jaipur in the Musafir app.
+                Broadcast official travel advisories, parking capacity notices, and dynamic
+                incentives directly to all users exploring Jaipur in the Raahi app.
               </p>
             </div>
 
@@ -783,7 +1052,7 @@ export function AdminDashboard() {
 
               <div className="flex items-center justify-between pt-2">
                 <span className="text-[11px] text-neutral-500">
-                  Target: ~14,800 active app sessions in Jaipur GPS boundary
+                  Target: Active app sessions within Jaipur boundary
                 </span>
                 <button
                   type="submit"
@@ -819,6 +1088,459 @@ export function AdminDashboard() {
             </div>
           </div>
         )}
+
+        {/* TAB 5: ML READINESS & TRAINING DATA PIPELINE */}
+        {activeTab === "ml-readiness" && (() => {
+          const staleObservations = observationsRepository.getStaleObservations();
+          const trainingRecords = observationsRepository.getTrainingDataset(0);
+          const evaluationReport = observationsRepository.getEvaluationReport(10);
+          const promotionGate = observationsRepository.getPromotionGateStatus();
+
+          const totalReports = reports.length;
+          const pendingReports = reports.filter((r) => r.moderationStatus === "pending").length;
+          const verifiedReports = reports.filter((r) => r.moderationStatus === "verified").length;
+          const rejectedReports = reports.filter((r) => r.moderationStatus === "rejected").length;
+
+          const totalObs = allObservations.length;
+          const activeObs = observations.length;
+          const staleObs = staleObservations.length;
+
+          const communityObs = allObservations.filter((o) => o.sourceType === "community_verified").length;
+          const staffObs = allObservations.filter((o) => o.sourceType === "staff_check").length;
+          const authorityObs = allObservations.filter((o) => o.sourceType === "authority_override").length;
+
+          const quietObs = allObservations.filter((o) => o.crowdLevel === "Quiet").length;
+          const moderateObs = allObservations.filter((o) => o.crowdLevel === "Moderate").length;
+          const busyObs = allObservations.filter((o) => o.crowdLevel === "Busy").length;
+
+          return (
+            <div className="space-y-6">
+              {/* Executive Status Banner */}
+              <div className="bg-gradient-to-r from-neutral-900 via-amber-950/30 to-neutral-900 border border-amber-500/30 rounded-xl p-5">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <Database className="w-5 h-5 text-amber-500" />
+                      <h3 className="font-bold text-lg text-neutral-100">
+                        Jaipur Crowd Model Pipeline & Production Gate
+                      </h3>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-semibold">
+                        Phase 2 ML Ready
+                      </span>
+                    </div>
+                    <p className="text-xs text-neutral-400 max-w-3xl">
+                      Reproducible, zero-leakage training data extraction from verified on-ground observations.
+                      Enforces objective governance before any future tabular ML model (XGBoost/LightGBM) can be deployed to production.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      onClick={handleDownloadCsv}
+                      disabled={trainingRecords.length === 0}
+                      className="px-3 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-neutral-950 text-xs font-bold transition flex items-center gap-1.5"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      Download Training CSV ({trainingRecords.length})
+                    </button>
+                    <button
+                      onClick={handleDownloadJson}
+                      disabled={trainingRecords.length === 0}
+                      className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-semibold border border-neutral-700 transition flex items-center gap-1.5"
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5" />
+                      Export JSON
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Data Pipeline Volume KPIs */}
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <div className="bg-neutral-900/80 border border-neutral-800 rounded-xl p-3.5 space-y-1">
+                  <span className="text-[11px] font-medium text-neutral-400 uppercase tracking-wider">
+                    Total Reports
+                  </span>
+                  <div className="text-2xl font-bold text-neutral-100">{totalReports}</div>
+                  <div className="text-[11px] text-neutral-500 flex gap-1.5">
+                    <span className="text-amber-400">{pendingReports} pend</span>
+                    <span>•</span>
+                    <span className="text-emerald-400">{verifiedReports} ver</span>
+                    <span>•</span>
+                    <span className="text-red-400">{rejectedReports} rej</span>
+                  </div>
+                </div>
+
+                <div className="bg-neutral-900/80 border border-neutral-800 rounded-xl p-3.5 space-y-1">
+                  <span className="text-[11px] font-medium text-neutral-400 uppercase tracking-wider">
+                    Accepted Observations
+                  </span>
+                  <div className="text-2xl font-bold text-neutral-100">{totalObs}</div>
+                  <div className="text-[11px] text-neutral-500 flex gap-1.5">
+                    <span className="text-emerald-400 font-semibold">{activeObs} active</span>
+                    <span>•</span>
+                    <span className="text-neutral-400">{staleObs} historical</span>
+                  </div>
+                </div>
+
+                <div className="bg-neutral-900/80 border border-neutral-800 rounded-xl p-3.5 space-y-1">
+                  <span className="text-[11px] font-medium text-neutral-400 uppercase tracking-wider">
+                    Destination Coverage
+                  </span>
+                  <div className="text-2xl font-bold text-neutral-100">
+                    {evaluationReport.destinationsRepresented}/16
+                  </div>
+                  <div className="text-[11px] text-neutral-500">
+                    {evaluationReport.destinationCoveragePct}% of curated Jaipur sites
+                  </div>
+                </div>
+
+                <div className="bg-neutral-900/80 border border-neutral-800 rounded-xl p-3.5 space-y-1">
+                  <span className="text-[11px] font-medium text-neutral-400 uppercase tracking-wider">
+                    Temporal Span
+                  </span>
+                  <div className="text-2xl font-bold text-neutral-100">
+                    {evaluationReport.timeRangeDays} {evaluationReport.timeRangeDays === 1 ? "day" : "days"}
+                  </div>
+                  <div className="text-[11px] text-neutral-500 truncate">
+                    {evaluationReport.earliestObservationTimestamp
+                      ? new Date(evaluationReport.earliestObservationTimestamp).toLocaleDateString()
+                      : "No data"}
+                  </div>
+                </div>
+
+                <div className="bg-neutral-900/80 border border-neutral-800 rounded-xl p-3.5 space-y-1">
+                  <span className="text-[11px] font-medium text-neutral-400 uppercase tracking-wider">
+                    Training Features
+                  </span>
+                  <div className="text-2xl font-bold text-emerald-400">32 cols</div>
+                  <div className="text-[11px] text-neutral-500">
+                    0% missing rate • Zero leakage
+                  </div>
+                </div>
+              </div>
+
+              {/* Data Quality & Provenance Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-neutral-900/80 border border-neutral-800 rounded-xl p-5 space-y-4">
+                  <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+                    <h4 className="font-semibold text-sm text-neutral-100 flex items-center gap-2">
+                      <Layers className="w-4 h-4 text-amber-500" />
+                      Observation Provenance & Class Distribution
+                    </h4>
+                    <span className="text-xs text-neutral-400">N = {totalObs}</span>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div>
+                      <div className="flex justify-between text-xs text-neutral-300 mb-1">
+                        <span>Source Breakdown</span>
+                        <span className="text-neutral-500">Confidence Weighting</span>
+                      </div>
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between items-center text-xs p-2 rounded bg-neutral-950 border border-neutral-800">
+                          <span className="text-neutral-300">Community Verified Reports</span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-neutral-100">{communityObs}</span>
+                            <span className="text-[10px] text-neutral-500">(0.85–0.90 conf)</span>
+                          </div>
+                        </div>
+                        <div className="flex justify-between items-center text-xs p-2 rounded bg-neutral-950 border border-neutral-800">
+                          <span className="text-neutral-300">Staff Confirmed Checks</span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-neutral-100">{staffObs}</span>
+                            <span className="text-[10px] text-neutral-500">(1.00 conf)</span>
+                          </div>
+                        </div>
+                        <div className="flex justify-between items-center text-xs p-2 rounded bg-neutral-950 border border-neutral-800">
+                          <span className="text-neutral-300">Authority Overrides</span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-neutral-100">{authorityObs}</span>
+                            <span className="text-[10px] text-neutral-500">(0.95 conf)</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between text-xs text-neutral-300 mb-1">
+                        <span>Target Crowd Levels</span>
+                        <span className="text-neutral-500">Numeric Mapping</span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="p-2.5 rounded bg-emerald-950/20 border border-emerald-500/30 text-center">
+                          <div className="text-[10px] text-emerald-400 font-bold uppercase">Quiet</div>
+                          <div className="text-lg font-bold text-emerald-200">{quietObs}</div>
+                          <div className="text-[10px] text-neutral-500">Score = 20</div>
+                        </div>
+                        <div className="p-2.5 rounded bg-amber-950/20 border border-amber-500/30 text-center">
+                          <div className="text-[10px] text-amber-400 font-bold uppercase">Moderate</div>
+                          <div className="text-lg font-bold text-amber-200">{moderateObs}</div>
+                          <div className="text-[10px] text-neutral-500">Score = 50</div>
+                        </div>
+                        <div className="p-2.5 rounded bg-red-950/20 border border-red-500/30 text-center">
+                          <div className="text-[10px] text-red-400 font-bold uppercase">Busy</div>
+                          <div className="text-lg font-bold text-red-200">{busyObs}</div>
+                          <div className="text-[10px] text-neutral-500">Score = 80</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-neutral-900/80 border border-neutral-800 rounded-xl p-5 space-y-4">
+                  <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+                    <h4 className="font-semibold text-sm text-neutral-100 flex items-center gap-2">
+                      <Lock className="w-4 h-4 text-emerald-400" />
+                      Target Leakage Prevention & Traceability
+                    </h4>
+                    <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-semibold border border-emerald-500/30">
+                      Enforced
+                    </span>
+                  </div>
+
+                  <div className="space-y-2.5 text-xs">
+                    <div className="p-3 rounded-lg bg-neutral-950 border border-neutral-800 space-y-1">
+                      <div className="font-semibold text-neutral-200 flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        Strict Temporal Boundaries
+                      </div>
+                      <p className="text-[11px] text-neutral-400">
+                        Feature extraction guarantees that calendar indicators, prior crowd levels, and weather are evaluated strictly prior to the observation target timestamp (T_features &lt; T_target).
+                      </p>
+                    </div>
+
+                    <div className="p-3 rounded-lg bg-neutral-950 border border-neutral-800 space-y-1">
+                      <div className="font-semibold text-neutral-200 flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        Zero Personal Information (PII)
+                      </div>
+                      <p className="text-[11px] text-neutral-400">
+                        Anti-farming rate limits use non-reversible browser session hashes. No tourist names, phone numbers, or device identifiers enter the training dataset.
+                      </p>
+                    </div>
+
+                    <div className="p-3 rounded-lg bg-neutral-950 border border-neutral-800 space-y-1">
+                      <div className="font-semibold text-neutral-200 flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        Full Lineage & Audit Trail
+                      </div>
+                      <p className="text-[11px] text-neutral-400">
+                        Every exported training row retains explicit links to its parent observation ID, source report ID, and verifying official credentials.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Baseline Evaluation & Validation Panel */}
+              <div className="bg-neutral-900/80 border border-neutral-800 rounded-xl p-5 space-y-4">
+                <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+                  <div>
+                    <h4 className="font-semibold text-sm text-neutral-100 flex items-center gap-2">
+                      <Scale className="w-4 h-4 text-amber-500" />
+                      Baseline v1.0 Statistical Evaluation
+                    </h4>
+                    <p className="text-xs text-neutral-400 mt-0.5">
+                      Evaluated on chronologically held-out observations to benchmark explainable prior against on-ground observations.
+                    </p>
+                  </div>
+
+                  <span
+                    className={`text-[10px] px-2.5 py-1 rounded-full font-bold uppercase tracking-wider border ${
+                      evaluationReport.status === "evaluated"
+                        ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/40"
+                        : "bg-amber-500/20 text-amber-400 border-amber-500/40"
+                    }`}
+                  >
+                    {evaluationReport.status === "evaluated" ? "Benchmarked" : "Insufficient Data"}
+                  </span>
+                </div>
+
+                {evaluationReport.status === "insufficient_data" ? (
+                  <div className="p-4 rounded-lg bg-amber-500/5 border border-amber-500/20 flex items-start gap-3">
+                    <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <h5 className="text-xs font-bold text-amber-300">
+                        Statistically Sound Evaluation Requires Additional Observations
+                      </h5>
+                      <p className="text-xs text-neutral-300 leading-relaxed">
+                        Currently {evaluationReport.totalUsableObservations} observations are recorded in the data layer.
+                        A minimum of 10 observations across multiple distinct days and monuments is required before publishing numeric MAE/RMSE metrics.
+                        Publishing metrics on sparse samples would create false precision.
+                      </p>
+                      <div className="pt-2 text-[11px] text-neutral-400">
+                        Active Production Model: <b className="text-neutral-200">Baseline v1.0 (Explainable Heuristic Prior)</b>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="p-3 bg-neutral-950 rounded-lg border border-neutral-800">
+                      <div className="text-[10px] text-neutral-500 uppercase">Numeric MAE</div>
+                      <div className="text-xl font-bold text-neutral-100">{evaluationReport.mae} pts</div>
+                      <div className="text-[10px] text-neutral-500">Mean Absolute Error</div>
+                    </div>
+                    <div className="p-3 bg-neutral-950 rounded-lg border border-neutral-800">
+                      <div className="text-[10px] text-neutral-500 uppercase">Numeric RMSE</div>
+                      <div className="text-xl font-bold text-neutral-100">{evaluationReport.rmse} pts</div>
+                      <div className="text-[10px] text-neutral-500">Root Mean Square Error</div>
+                    </div>
+                    <div className="p-3 bg-neutral-950 rounded-lg border border-neutral-800">
+                      <div className="text-[10px] text-neutral-500 uppercase">Category Match</div>
+                      <div className="text-xl font-bold text-emerald-400">{evaluationReport.categoryAccuracyPct}%</div>
+                      <div className="text-[10px] text-neutral-500">Exact category agreement</div>
+                    </div>
+                    <div className="p-3 bg-neutral-950 rounded-lg border border-neutral-800">
+                      <div className="text-[10px] text-neutral-500 uppercase">Validation Set</div>
+                      <div className="text-xl font-bold text-neutral-100">{evaluationReport.testCount} obs</div>
+                      <div className="text-[10px] text-neutral-500">Chronological 30% split</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ML Candidate Promotion Gate Checklist */}
+              <div className="bg-neutral-900/80 border border-neutral-800 rounded-xl p-5 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-neutral-800 pb-3">
+                  <div>
+                    <h4 className="font-semibold text-sm text-neutral-100 flex items-center gap-2">
+                      <CheckCircle className="w-4 h-4 text-amber-500" />
+                      Future ML Candidate Production Promotion Gate
+                    </h4>
+                    <p className="text-xs text-neutral-400 mt-0.5">
+                      Objective criteria required before any candidate model (XGBoost/LightGBM) can replace Baseline v1.0.
+                    </p>
+                  </div>
+
+                  <span
+                    className={`text-[10px] px-2.5 py-1 rounded-full font-bold uppercase tracking-wider border shrink-0 ${
+                      promotionGate.isEligibleForProduction
+                        ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/40"
+                        : "bg-amber-500/20 text-amber-400 border-amber-500/40"
+                    }`}
+                  >
+                    {promotionGate.isEligibleForProduction ? "Eligible for Promotion" : "Promotion Blocked"}
+                  </span>
+                </div>
+
+                <div className="space-y-2">
+                  {promotionGate.checks.map((check) => (
+                    <div
+                      key={check.id}
+                      className={`p-3 rounded-lg border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs transition ${
+                        check.passed
+                          ? "bg-emerald-950/10 border-emerald-500/20 text-neutral-200"
+                          : "bg-neutral-950 border-neutral-800 text-neutral-400"
+                      }`}
+                    >
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          {check.passed ? (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                          ) : (
+                            <XCircle className="w-4 h-4 text-amber-500 shrink-0" />
+                          )}
+                          <span className="font-semibold text-neutral-200">{check.title}</span>
+                          <span className="text-[10px] text-neutral-500 bg-neutral-900 px-1.5 py-0.5 rounded border border-neutral-800">
+                            Required: {check.requirement}
+                          </span>
+                        </div>
+                        {check.blockerReason && (
+                          <p className="text-[11px] text-amber-400/90 pl-6">{check.blockerReason}</p>
+                        )}
+                      </div>
+
+                      <div className="text-right shrink-0 pl-6 sm:pl-0">
+                        <span
+                          className={`font-mono text-xs ${
+                            check.passed ? "text-emerald-400 font-bold" : "text-neutral-400"
+                          }`}
+                        >
+                          {check.currentValue}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="p-3 rounded-lg bg-neutral-950 border border-neutral-800 text-xs text-neutral-400 flex items-center justify-between">
+                  <span>Current Production Model:</span>
+                  <span className="font-bold text-amber-400">
+                    {promotionGate.activeProductionModel} (Explainable Deterministic Prior)
+                  </span>
+                </div>
+              </div>
+
+              {/* Training Dataset Preview Table */}
+              <div className="bg-neutral-900/80 border border-neutral-800 rounded-xl p-5 space-y-4">
+                <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+                  <div>
+                    <h4 className="font-semibold text-sm text-neutral-100 flex items-center gap-2">
+                      <FileText className="w-4 h-4 text-neutral-400" />
+                      Training Dataset Preview (First 5 Rows)
+                    </h4>
+                    <p className="text-xs text-neutral-400 mt-0.5">
+                      Standard tabular layout ready for Scikit-learn, XGBoost, or Pandas export.
+                    </p>
+                  </div>
+                  <span className="text-xs text-neutral-500">
+                    Total extracted: {trainingRecords.length} records
+                  </span>
+                </div>
+
+                {trainingRecords.length === 0 ? (
+                  <p className="text-xs text-neutral-500 italic py-4 text-center">
+                    No verified observations available in data layer yet.
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs font-mono">
+                      <thead className="bg-neutral-950 text-neutral-400 text-[10px] uppercase border-b border-neutral-800">
+                        <tr>
+                          <th className="p-2">Destination</th>
+                          <th className="p-2">Target Time (IST)</th>
+                          <th className="p-2">Prior Base</th>
+                          <th className="p-2">Time Eff</th>
+                          <th className="p-2">Prior 1h Obs</th>
+                          <th className="p-2">Target Level</th>
+                          <th className="p-2">Target Score</th>
+                          <th className="p-2">Source Type</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-neutral-800/60">
+                        {trainingRecords.slice(0, 5).map((row, idx) => (
+                          <tr key={idx} className="hover:bg-neutral-800/30">
+                            <td className="p-2 font-semibold text-neutral-200">{row.destination_name}</td>
+                            <td className="p-2 text-neutral-400">{row.target_timestamp_ist}</td>
+                            <td className="p-2 text-neutral-300">{row.dest_base_score}</td>
+                            <td className="p-2 text-neutral-300">{row.time_of_day_effect}</td>
+                            <td className="p-2 text-neutral-400">{row.prior_observations_count_1h}</td>
+                            <td className="p-2">
+                              <span
+                                className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                                  row.target_crowd_level === "Quiet"
+                                    ? "bg-emerald-500/20 text-emerald-400"
+                                    : row.target_crowd_level === "Moderate"
+                                    ? "bg-amber-500/20 text-amber-400"
+                                    : "bg-red-500/20 text-red-400"
+                                }`}
+                              >
+                                {row.target_crowd_level}
+                              </span>
+                            </td>
+                            <td className="p-2 font-bold text-neutral-100">{row.target_crowd_score}</td>
+                            <td className="p-2 text-neutral-400 text-[10px]">{row.source_type}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
       </main>
     </div>
   );
