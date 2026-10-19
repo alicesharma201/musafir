@@ -116,6 +116,33 @@ function Index() {
 
   const go = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
 
+  const handleShowOnMap = (placeId: string) => {
+    setSelectedMapPlaceId(placeId);
+    setMapFocusKey((k) => k + 1);
+    go("map");
+  };
+
+  const handleReplaceInRoute = (hotspotId: string, gemId: string) => {
+    setPlan((prevPlan) => applyStopReplacement(prevPlan, hotspotId, gemId));
+    setShown(true);
+    reward(20, `Added ${byId(gemId).name} to itinerary! (+20 pts)`);
+  };
+
+  const handleRemoveFromRoute = (hotspotId: string) => {
+    setPlan((prevPlan) => removeStopReplacement(prevPlan, hotspotId));
+    setToast(`Restored original stop for ${byId(hotspotId).name}`);
+    setTimeout(() => setToast(null), 2000);
+  };
+
+  const handleResetReplacements = () => {
+    setPlan((prevPlan) => ({
+      ...prevPlan,
+      stopReplacements: undefined,
+    }));
+    setToast("Reset all itinerary stops to original");
+    setTimeout(() => setToast(null), 2000);
+  };
+
   return (
     <div className="min-h-screen">
       {/* Active City Broadcast Advisory Banner */}

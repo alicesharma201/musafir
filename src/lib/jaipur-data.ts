@@ -5,14 +5,13 @@ export type Place = {
   name: string;
   hindi: string;
   tags: string[];
-  base: number; // historical crowd
-  x: number; // map % position
+  base: number; // historical crowd indicator
+  x: number; // illustrative map % position
   y: number;
   lat: number;
   lng: number;
   best: string;
   peak: string;
-  entry: number;
   gem?: boolean;
   alternatives?: string[];
   update: string;
@@ -276,8 +275,20 @@ export const PLACES: Place[] = [
   },
 ];
 
-export const byId = (id: string) => PLACES.find((p) => p.id === id)!;
+export const byId = (id: string): Place => {
+  const place = PLACES.find((p) => p.id === id);
+  if (!place) {
+    throw new Error(`Place with id "${id}" not found.`);
+  }
+  return place;
+};
 
+export type ForecastInput = {
+  day: string;
+  hour: number;
+  festival: boolean;
+  weather: "clear" | "hot" | "rain";
+};
 export type ForecastInput = {
   day: string;
   hour: number;

@@ -270,14 +270,17 @@ export default function LeafletMapInner({
                     Quieter alternative:{" "}
                     <button
                       onClick={() => {
-                        const altPlace = byId(p.alternatives![0]);
-                        setSel(altPlace);
-                        setFlyTarget([altPlace.lat, altPlace.lng]);
-                        setFlyZoom(14);
+                        const altId = p.alternatives?.[0];
+                        if (altId) {
+                          const altPlace = byId(altId);
+                          setSel(altPlace);
+                          setFlyTarget([altPlace.lat, altPlace.lng]);
+                          setFlyZoom(14);
+                        }
                       }}
                       className="underline font-semibold text-primary"
                     >
-                      {byId(p.alternatives[0]).name}
+                      {byId(p.alternatives[0]!).name}
                     </button>
                   </p>
                 )}

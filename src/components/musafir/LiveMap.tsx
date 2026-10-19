@@ -19,6 +19,8 @@ interface LiveMapProps {
   observations?: VerifiedObservation[];
   adminOverrides?: Record<string, number>;
   onOptimize: (id: string) => void;
+  selectedPlaceId?: string | null;
+  focusKey?: number;
 }
 
 export function LiveMap({
@@ -52,6 +54,21 @@ export function LiveMap({
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  useEffect(() => {
+    if (selectedPlaceId) {
+      try {
+        const p = byId(selectedPlaceId);
+        if (p) {
+          setSel(p);
+          setFlyTarget([p.lat, p.lng]);
+          setFlyZoom(15);
+        }
+      } catch {
+        // ignore missing place lookup
+      }
+    }
+  }, [selectedPlaceId, focusKey]);
 
   // Handle "Use my location"
   const handleUseMyLocation = () => {
@@ -171,13 +188,15 @@ export function LiveMap({
             }
           : data[0];
 
-        setSelectedSearchResult(target);
-        const lat = parseFloat(target.lat);
-        const lon = parseFloat(target.lon);
-        setFlyTarget([lat, lon]);
-        setFlyZoom(15);
-        if (localMatch) {
-          setSel(localMatch);
+        if (target) {
+          setSelectedSearchResult(target);
+          const lat = parseFloat(target.lat);
+          const lon = parseFloat(target.lon);
+          setFlyTarget([lat, lon]);
+          setFlyZoom(15);
+          if (localMatch) {
+            setSel(localMatch);
+          }
         }
       } else {
         setSearchResults(data);
@@ -458,9 +477,6 @@ export function LiveMap({
                         💎 Hidden Gem
                       </span>
                     )}
-                    <span className="rounded-full bg-secondary px-3 py-1 text-xs font-semibold text-muted-foreground">
-                      🎟 Entry: {sel.entry === 0 ? "Free" : `₹${sel.entry}`}
-                    </span>
                   </div>
 
                   {pred.evidence.dataFreshnessMinutes && (

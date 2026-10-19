@@ -238,18 +238,63 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 /* ---------------- Itinerary + Smart Route ---------------- */
-type Stop = { time: string; hour: number; id: string; note?: string; food?: boolean };
+export type Stop = { time: string; hour: number; id: string; note?: string; food?: boolean };
+
+export function resolveStop(stop: Stop, replacements?: Record<string, string>): Stop {
+  if (stop.food || !replacements) return stop;
+  const replacementId = replacements[stop.id];
+  if (replacementId && replacementId !== stop.id) {
+    try {
+      const originalPlace = byId(stop.id);
+      const newPlace = byId(replacementId);
+      return {
+        ...stop,
+        id: replacementId,
+        note: `Replaced crowded ${originalPlace.name} with ${newPlace.name}`,
+      };
+    } catch {
+      return stop;
+    }
+  }
+  return stop;
+}
 
 export function buildOriginal(plan: Plan): Stop[] {
   const must = plan.must || "amber";
-  const base: Stop[] = [
+  const raw: Stop[] = [
     { time: "11:00 AM", hour: 11, id: "hawa" },
     { time: "1:00 PM", hour: 13, id: "jantar" },
     { time: "4:00 PM", hour: 16, id: must },
     { time: "6:30 PM", hour: 18, id: "nahargarh" },
   ];
-  return plan.time === "half" ? base.slice(1, 3) : base;
+  const sliced = plan.time === "half" ? raw.slice(1, 3) : raw;
+  const resolved = sliced.map((s) => resolveStop(s, plan.stopReplacements));
+
+  // If there are replacements for hotspots not present in sliced stops, include them
+  if (plan.stopReplacements) {
+    Object.entries(plan.stopReplacements).forEach(([hotspotId, gemId]) => {
+      if (!sliced.some((s) => s.id === hotspotId)) {
+        if (!resolved.some((s) => s.id === gemId)) {
+          try {
+            const hotspot = byId(hotspotId);
+            resolved.push({
+              time: "5:00 PM",
+              hour: 17,
+              id: gemId,
+              note: `Added as quieter alternative to crowded ${hotspot.name}`,
+            });
+          } catch {
+            // ignore
+          }
+        }
+      }
+    });
+  }
+
+  resolved.sort((a, b) => a.hour - b.hour);
+  return resolved;
 }
+
 
 export function buildSmart(plan: Plan): Stop[] {
   const must = plan.must || "amber";
@@ -278,7 +323,54 @@ export function buildSmart(plan: Plan): Stop[] {
     },
     { time: "5:30 PM", hour: 17, id: "jalmahal", note: "Sunset promenade viewpoint" },
   ];
-  return plan.time === "half" ? s.slice(0, 3) : s;
+  const sliced = plan.time === "half" ? raw.slice(0, 3) : raw;
+  const resolved = sliced.map((s) => resolveStop(s, plan.stopReplacements));
+
+  // If there are replacements for hotspots not present in sliced stops, include them
+  if (plan.stopReplacements) {
+    Object.entries(plan.stopReplacements).forEach(([hotspotId, gemId]) => {
+      if (!sliced.some((s) => s.id === hotspotId)) {
+        if (!resolved.some((s) => s.id === gemId)) {
+          try {
+            const hotspot = byId(hotspotId);
+            resolved.push({
+              time: "4:30 PM",
+              hour: 16,
+              id: gemId,
+              note: `Added as quieter alternative to crowded ${hotspot.name}`,
+            });
+          } catch {
+            // ignore
+          }
+        }
+      }
+    });
+  }
+
+  // Avoid duplicate stops across the itinerary
+  const used = new Set<string>();
+  for (let i = 0; i < resolved.length; i++) {
+    const s = resolved[i];
+    if (!s || s.food) continue;
+    if (used.has(s.id)) {
+      const unusedAlt =
+        alts.find((a) => !used.has(a)) ??
+        PLACES.find((pl) => pl.gem && !used.has(pl.id))?.id ??
+        "jaigarh";
+      resolved[i] = {
+        time: s.time,
+        hour: s.hour,
+        id: unusedAlt,
+        note: "Hidden gem, quieter alternative",
+      };
+      used.add(unusedAlt);
+    } else {
+      used.add(s.id);
+    }
+  }
+
+  resolved.sort((a, b) => a.hour - b.hour);
+  return resolved;
 }
 
 export function Itinerary({
@@ -318,7 +410,7 @@ export function Itinerary({
   return (
     <div className="grid gap-8 lg:grid-cols-[1.4fr_1fr]">
       <div className="rounded-2xl border bg-card p-6 shadow">
-        {!optimized && (
+        {!optimized && !hasReplacements && (
           <div className="mb-5 rounded-xl border-l-4 border-crowd-critical bg-secondary p-4">
             <p className="font-bold">
               ⚠ {must.name} at 4 PM: {mustPred.score}/100 crowd pressure — {mustPred.category}
